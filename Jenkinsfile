@@ -87,7 +87,7 @@ pipeline {
       steps {
         script {
           def nexusIp = sh(
-            script: "getent hosts nexus.lab | awk '{print \\$1}' | head -1",
+            script: "getent hosts nexus.lab | head -1 | sed 's/[[:space:]].*//'",
             returnStdout: true
           ).trim()
 
