@@ -1,38 +1,51 @@
-from flask import Flask, jsonify
 import os
 import time
 import uuid
-import requests
+from fastapi import FastAPI
 
-app = Flask(__name__)
-
-START_TIME = time.time()
+app = FastAPI()
 VERSION = os.getenv("APP_VERSION", "dev")
+START_TIME = time.time()
 
 
-@app.route("/")
+def read_secret_file(path: str) -> dict:
+    secrets = {}
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    key, value = line.split("=", 1)
+                    secrets[key.strip()] = value.strip()
+    except FileNotFoundError:
+        pass
+    return secrets
+
+
+@app.get("/")
 def hello():
-    return jsonify({
+    secrets = read_secret_file("/vault/secrets/app-creds")
+    return {
         "service": "corona-python",
         "requestID": str(uuid.uuid4()),
         "message": "hello from the Python service",
-        "requestsVersion": requests.__version__
-    })
+        "secretsLoaded": {
+            "apiKey": bool(secrets.get("apiKey")),
+            "externalToken": bool(secrets.get("externalServiceToken")),
+        },
+    }
 
 
-@app.route("/version")
+@app.get("/version")
 def version():
-    return jsonify({
+    return {
         "version": VERSION,
-        "uptimeSec": int(time.time() - START_TIME)
-    })
+        "uptimeSec": int(time.time() - START_TIME),
+    }
 
 
-@app.route("/health")
+@app.get("/health")
 def health():
-    return "ok\n", 200
-
-
-if __name__ == "__main__":
-    port = int(os.getenv("PORT", "8080"))
-    app.run(host="0.0.0.0", port=port)
+    return "ok"

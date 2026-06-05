@@ -1,17 +1,11 @@
-# Python
 __pycache__/
 *.pyc
+*.pyo
 .venv/
-venv/
-
-# Local build config fetched from Nexus
 pip.conf
-
-# Helm packages
+build-creds.env
+kubeconfig.yaml
 *.tgz
-helm/charts/
-
-# IDE / editor
 .idea/
 .vscode/
-*.swp
+

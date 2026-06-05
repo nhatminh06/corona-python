@@ -1,25 +1,19 @@
 pipeline {
   agent { label 'linux' }
-
   environment {
     HARBOR_REGISTRY = 'harbor.lab:8080'
     HARBOR_PROJECT  = 'library'
     IMAGE_NAME      = 'corona-python'
     IMAGE_TAG       = "${env.BUILD_NUMBER}"
     FULL_IMAGE      = "${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${IMAGE_NAME}:${IMAGE_TAG}"
-
     NEXUS_BASE      = 'http://nexus.lab:8081'
     CHART_NAME      = 'corona-python'
     CHART_VERSION   = '0.1.0'
-
     SONAR_HOST      = 'http://sonarqube.lab:9000'
   }
-
   stages {
     stage('Checkout') {
-      steps {
-        checkout scm
-      }
+      steps { checkout scm }
     }
 
     stage('Security: secret scan (gitleaks)') {
@@ -35,12 +29,7 @@ pipeline {
           semgrep --config=auto --severity=ERROR --quiet --error .
           EXIT_CODE=$?
           set -e
-
-          if [ "$EXIT_CODE" -ne 0 ]; then
-            echo "Semgrep findings above"
-            exit 1
-          fi
-
+          [ "$EXIT_CODE" -ne 0 ] && { echo "Semgrep findings above"; exit 1; }
           echo "Semgrep: no high-severity findings."
         '''
       }
@@ -67,96 +56,103 @@ pipeline {
       }
     }
 
-    stage('Fetch Python build config') {
+    stage('Fetch secrets from Vault') {
       steps {
-        withCredentials([usernamePassword(credentialsId: 'nexus-creds',
-                                          usernameVariable: 'NEXUS_USER',
-                                          passwordVariable: 'NEXUS_PASS')]) {
+        withCredentials([
+          string(credentialsId: 'vault-role-id', variable: 'VAULT_ROLE_ID'),
+          string(credentialsId: 'vault-secret-id', variable: 'VAULT_SECRET_ID')
+        ]) {
           sh '''
-            curl -fsSL -u "$NEXUS_USER:$NEXUS_PASS" \
-              -o pip.conf \
-              ${NEXUS_BASE}/repository/build-config/python/pip.conf
+            VAULT_TOKEN=$(curl -sf -X POST \
+              http://vault.lab:8200/v1/auth/approle/login \
+              -d "role_id=${VAULT_ROLE_ID}&secret_id=${VAULT_SECRET_ID}" \
+              | jq -r '.auth.client_token')
 
-            echo "Fetched pip.conf from Nexus build-config"
+            if [ -z "$VAULT_TOKEN" ] || [ "$VAULT_TOKEN" = "null" ]; then
+              echo "Vault authentication failed"
+              exit 1
+            fi
+
+            TOOLS=$(curl -sf \
+              -H "X-Vault-Token: ${VAULT_TOKEN}" \
+              http://vault.lab:8200/v1/app-creds/data/jenkins-tools)
+
+            echo "$TOOLS" | jq -r '.data.data.kubeconfig' > kubeconfig.yaml
+            echo "HARBOR_USER=$(echo "$TOOLS" | jq -r '.data.data.harborUser')"     > build-creds.env
+            echo "HARBOR_PASS=$(echo "$TOOLS" | jq -r '.data.data.harborPassword')" >> build-creds.env
+            echo "NEXUS_USER=$(echo "$TOOLS"  | jq -r '.data.data.nexusUser')"      >> build-creds.env
+            echo "NEXUS_PASS=$(echo "$TOOLS"  | jq -r '.data.data.nexusPassword')"  >> build-creds.env
+
+            if [ ! -s kubeconfig.yaml ]; then
+              echo "Failed to fetch kubeconfig from Vault"
+              exit 1
+            fi
+
+            echo "All credentials fetched from Vault successfully"
           '''
         }
+      }
+    }
+
+    stage('Fetch pip config from Nexus') {
+      steps {
+        sh '''
+          set -a; . ./build-creds.env; set +a
+          curl -fsSL -u "$NEXUS_USER:$NEXUS_PASS" \
+            -o pip.conf \
+            ${NEXUS_BASE}/repository/build-config/python/pip.conf
+        '''
       }
     }
 
     stage('Build Docker image') {
       steps {
-        script {
-          def nexusIp = sh(
-            script: "getent hosts nexus.lab | head -1 | sed 's/[[:space:]].*//'",
-            returnStdout: true
-          ).trim()
-
-          if (!nexusIp) {
-            error("Could not resolve nexus.lab on Jenkins node")
-          }
-
-          sh """
-            docker build \
-              --add-host=nexus.lab:${nexusIp} \
-              -t ${FULL_IMAGE} \
-              --build-arg BUILD_VERSION=${IMAGE_TAG} \
-              .
-          """
-        }
+        sh "docker build --add-host=nexus.lab:10.146.183.167 -t ${FULL_IMAGE} ."
       }
     }
 
     stage('Push to Harbor') {
       steps {
-        withCredentials([usernamePassword(credentialsId: 'harbor-creds',
-                                          usernameVariable: 'HARBOR_USER',
-                                          passwordVariable: 'HARBOR_PASS')]) {
-          sh '''
-            echo "$HARBOR_PASS" | docker login ${HARBOR_REGISTRY} -u "$HARBOR_USER" --password-stdin
-            docker push ${FULL_IMAGE}
-            docker logout ${HARBOR_REGISTRY}
-          '''
-        }
+        sh '''
+          set -a; . ./build-creds.env; set +a
+          echo "$HARBOR_PASS" | docker login harbor.lab:8080 \
+            -u "$HARBOR_USER" --password-stdin
+          docker push ${FULL_IMAGE}
+          docker logout harbor.lab:8080
+        '''
       }
     }
 
     stage('Fetch & template Helm chart') {
       steps {
-        withCredentials([usernamePassword(credentialsId: 'nexus-creds',
-                                          usernameVariable: 'NEXUS_USER',
-                                          passwordVariable: 'NEXUS_PASS')]) {
-          sh '''
-            curl -fsSL -u "$NEXUS_USER:$NEXUS_PASS" \
-              -o chart.tgz \
-              ${NEXUS_BASE}/repository/helm-charts/${CHART_NAME}-${CHART_VERSION}.tgz
-
-            tar -xzf chart.tgz
-
-            helm template ${IMAGE_NAME} ./${CHART_NAME} \
-              --set image.tag=${IMAGE_TAG}
-          '''
-        }
+        sh '''
+          set -a; . ./build-creds.env; set +a
+          curl -fsSL -u "$NEXUS_USER:$NEXUS_PASS" \
+            -o chart.tgz \
+            ${NEXUS_BASE}/repository/helm-charts/${CHART_NAME}-${CHART_VERSION}.tgz
+          tar -xzf chart.tgz
+          helm template ${IMAGE_NAME} ./${CHART_NAME} --set image.tag=${IMAGE_TAG}
+        '''
       }
     }
 
     stage('Deploy') {
       steps {
-        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
-          sh '''
-            helm upgrade --install ${IMAGE_NAME} ./${CHART_NAME} \
-              --set image.tag=${IMAGE_TAG} \
-              --namespace default
-          '''
-        }
+        sh '''
+          set -a; . ./build-creds.env; set +a
+          export KUBECONFIG=$(pwd)/kubeconfig.yaml
+          helm upgrade --install ${IMAGE_NAME} ./${CHART_NAME} \
+            --set image.tag=${IMAGE_TAG} \
+            --namespace default
+        '''
       }
     }
   }
-
   post {
     always {
+      sh 'rm -f build-creds.env kubeconfig.yaml pip.conf || true'
       sh 'docker rmi ${FULL_IMAGE} || true'
-      sh 'rm -f pip.conf chart.tgz || true'
-      sh 'rm -rf corona-python/ || true'
+      sh 'rm -rf chart.tgz corona-python/ || true'
     }
   }
 }

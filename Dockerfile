@@ -1,33 +1,17 @@
-# Build stage — installs Python dependencies through Nexus pypi-proxy
-FROM harbor.lab:8080/library/python:3.11-slim AS build
-
-WORKDIR /build
-
-ENV PIP_DISABLE_PIP_VERSION_CHECK=1
-ENV PIP_NO_CACHE_DIR=1
-
-# pip.conf is fetched by Jenkins from Nexus build-config before docker build
-COPY pip.conf /etc/pip.conf
-
-COPY requirements.txt .
-RUN python -m pip install --prefix=/install -r requirements.txt
-
-
-# Runtime stage
 FROM harbor.lab:8080/library/python:3.11-slim
-
 WORKDIR /app
 
-ENV PYTHONUNBUFFERED=1
-ENV PORT=8080
+RUN mkdir -p /root/.pip
+COPY pip.conf /root/.pip/pip.conf
 
-RUN useradd -u 1000 -m appuser
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-COPY --from=build /install /usr/local
-COPY app.py /app/app.py
+COPY . .
 
+RUN useradd -r -u 1000 appuser
 USER appuser
 
 EXPOSE 8080
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080"]
 
-CMD ["python", "app.py"]
