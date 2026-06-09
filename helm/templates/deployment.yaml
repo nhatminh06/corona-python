@@ -26,6 +26,12 @@ spec:
       serviceAccountName: corona-python
       imagePullSecrets:
         - name: {{ .Values.imagePullSecret }}
+      nodeSelector:
+        {{- toYaml .Values.nodeSelector | nindent 8 }}
+      hostAliases:
+        - ip: "10.146.183.231"
+          hostnames:
+            - "vault.lab"
       containers:
         - name: app
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
