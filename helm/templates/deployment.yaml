@@ -4,6 +4,15 @@ metadata:
   name: {{ .Release.Name }}
   labels:
     app: {{ .Release.Name }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}
       annotations:
         traffic.sidecar.istio.io/excludeOutboundPorts: "8200,8201"
         vault.hashicorp.com/agent-inject: "true"
@@ -18,34 +27,16 @@ metadata:
         vault.hashicorp.com/agent-requests-mem: "32Mi"
         vault.hashicorp.com/agent-limits-cpu: "50m"
         vault.hashicorp.com/agent-limits-mem: "64Mi"
-spec:
-  replicas: {{ .Values.replicaCount }}
-  selector:
-    matchLabels:
-      app: {{ .Release.Name }}
-  template:
-    metadata:
-      labels:
-        app: {{ .Release.Name }}
-      annotations:
-        vault.hashicorp.com/agent-inject: "true"
-        vault.hashicorp.com/role: "corona-python"
-        vault.hashicorp.com/agent-inject-secret-app-creds: "app-creds/data/corona-go"
-        vault.hashicorp.com/agent-inject-template-app-creds: |
-          {{`{{- with secret "app-creds/data/corona-go" -}}
-          apiKey={{ .Data.data.apiKey }}
-          externalServiceToken={{ .Data.data.externalServiceToken }}
-          {{- end }}`}}
     spec:
       serviceAccountName: corona-python
-      imagePullSecrets:
-        - name: {{ .Values.imagePullSecret }}
       nodeSelector:
-        {{- toYaml .Values.nodeSelector | nindent 8 }}
+        kubernetes.io/hostname: k8s-worker
       hostAliases:
         - ip: "10.146.183.231"
           hostnames:
             - "vault.lab"
+      imagePullSecrets:
+        - name: {{ .Values.imagePullSecret }}
       containers:
         - name: app
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
